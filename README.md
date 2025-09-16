@@ -15,11 +15,11 @@ A Discord bot that allows users to submit quotes via DM, vote on them using butt
 
 ### Prerequisites
 
-- Python 3.8+
-- PostgreSQL database
+- Python 3.8+ OR Docker
+- PostgreSQL database (or use Docker Compose)
 - Discord bot token
 
-### Installation
+### Option 1: Local Installation
 
 1. Clone the repository:
 ```bash
@@ -44,6 +44,26 @@ cp .env.template .env
 ```bash
 python bot.py
 ```
+
+### Option 2: Docker Deployment
+
+1. Clone the repository and configure:
+```bash
+git clone <repository-url>
+cd quote-bot
+cp .env.template .env
+# Edit .env with your Discord token and database password
+```
+
+2. Deploy with Docker Compose:
+```bash
+docker-compose up -d
+```
+
+This will automatically:
+- Set up PostgreSQL database with proper schema
+- Build and run the Discord bot
+- Handle all dependencies and networking
 
 ## Configuration
 
