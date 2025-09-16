@@ -19,7 +19,19 @@ A Discord bot that allows users to submit quotes via DM, vote on them using butt
 - PostgreSQL database (or use Docker Compose)
 - Discord bot token
 
-### Option 1: Local Installation
+### Option 1: Using Pre-built Docker Image
+
+Pull and run the latest image from GitHub Container Registry:
+```bash
+# Pull the latest image
+docker pull ghcr.io/caesarakalaeii/quote-bot:latest
+
+# Run with docker-compose (recommended)
+cp .env.template .env  # Configure your settings
+docker-compose up -d
+```
+
+### Option 2: Local Installation
 
 1. Clone the repository:
 ```bash
@@ -45,7 +57,7 @@ cp .env.template .env
 python bot.py
 ```
 
-### Option 2: Docker Deployment
+### Option 3: Build from Source with Docker
 
 1. Clone the repository and configure:
 ```bash
@@ -151,12 +163,25 @@ quote-bot/
 - **QuoteVotingView**: Discord UI components for voting buttons
 - **Config**: Environment variable management
 
+## CI/CD
+
+The repository includes automated workflows for:
+
+- **Docker Image Building**: Automatically builds and publishes Docker images to GitHub Container Registry on push to main branch
+- **Testing**: Validates code quality and configuration on pull requests
+- **Multi-platform Support**: Docker images are built for multiple architectures
+
+### Available Images
+
+- `ghcr.io/caesarakalaeii/quote-bot:latest` - Latest stable release from main branch
+- `ghcr.io/caesarakalaeii/quote-bot:main` - Latest development version
+
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Test thoroughly
+4. Test thoroughly (automated tests will run on PR)
 5. Submit a pull request
 
 ## License
