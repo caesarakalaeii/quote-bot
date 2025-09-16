@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: quotebot
+      POSTGRES_USER: quotebot_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    
+  quotebot:
+    image: ghcr.io/caesarakalaeii/quote-bot:latest
+    depends_on:
+      - postgres
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: quotebot
+      DB_USER: quotebot_user
+      DB_PASSWORD: ${DB_PASSWORD}
+      VOTE_DURATION_DAYS: ${VOTE_DURATION_DAYS:-7}
+      MIN_VOTES_THRESHOLD: ${MIN_VOTES_THRESHOLD:-3}
+      GUILD_ID: ${GUILD_ID:-}
+      VOTE_CHANNEL_ID: ${VOTE_CHANNEL_ID:-}
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
