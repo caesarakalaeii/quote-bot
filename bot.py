@@ -98,23 +98,31 @@ class QuoteBot(commands.Bot):
         """Post a quote in the voting channel with voting buttons."""
         try:
             # Find a suitable channel to post the quote
-            # For now, we'll post in the first available text channel
-            # In production, you might want to specify a dedicated voting channel
             guild = None
             channel = None
             
-            if Config.GUILD_ID:
-                guild = self.get_guild(int(Config.GUILD_ID))
-                if guild:
-                    channel = discord.utils.find(lambda c: c.name == 'quotes' or c.name == 'quote-voting', guild.text_channels)
-                    if not channel:
-                        channel = guild.text_channels[0]  # Fallback to first channel
+            # First, try to use the configured vote channel ID
+            if Config.VOTE_CHANNEL_ID:
+                channel = self.get_channel(int(Config.VOTE_CHANNEL_ID))
+                if channel:
+                    logger.info(f"Using configured vote channel: {channel.name}")
+                else:
+                    logger.warning(f"Configured vote channel ID {Config.VOTE_CHANNEL_ID} not found")
             
+            # If no specific channel configured or channel not found, use fallback logic
             if not channel:
-                # Fallback: use the first guild's first channel
-                if self.guilds:
-                    guild = self.guilds[0]
-                    channel = guild.text_channels[0]
+                if Config.GUILD_ID:
+                    guild = self.get_guild(int(Config.GUILD_ID))
+                    if guild:
+                        channel = discord.utils.find(lambda c: c.name == 'quotes' or c.name == 'quote-voting', guild.text_channels)
+                        if not channel:
+                            channel = guild.text_channels[0]  # Fallback to first channel
+                
+                if not channel:
+                    # Fallback: use the first guild's first channel
+                    if self.guilds:
+                        guild = self.guilds[0]
+                        channel = guild.text_channels[0]
             
             if not channel:
                 logger.error("No suitable channel found to post quote")

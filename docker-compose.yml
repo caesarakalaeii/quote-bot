@@ -28,6 +28,7 @@ services:
       VOTE_DURATION_DAYS: ${VOTE_DURATION_DAYS:-7}
       MIN_VOTES_THRESHOLD: ${MIN_VOTES_THRESHOLD:-3}
       GUILD_ID: ${GUILD_ID:-}
+      VOTE_CHANNEL_ID: ${VOTE_CHANNEL_ID:-}
     restart: unless-stopped
 
 volumes:

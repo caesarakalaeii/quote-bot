@@ -10,6 +10,7 @@ class Config:
     # Discord configuration
     DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
     GUILD_ID = os.getenv('GUILD_ID')  # Optional: specific guild for slash commands
+    VOTE_CHANNEL_ID = os.getenv('VOTE_CHANNEL_ID')  # Optional: specific channel for quote voting
     
     # Database configuration
     DB_HOST = os.getenv('DB_HOST', 'localhost')

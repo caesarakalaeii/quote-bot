@@ -77,6 +77,7 @@ All configuration is done via environment variables. Copy `.env.template` to `.e
 ### Optional Variables
 
 - `GUILD_ID`: Specific Discord server ID (if you want to limit to one server)
+- `VOTE_CHANNEL_ID`: Specific channel ID for posting quotes for voting (if not set, bot will look for channels named 'quotes' or 'quote-voting', or use the first available channel)
 - `DB_HOST`: Database host (default: localhost)
 - `DB_PORT`: Database port (default: 5432)
 - `DB_NAME`: Database name (default: quotebot)
