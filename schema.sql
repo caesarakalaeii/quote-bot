@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS quotes (
     channel_id BIGINT,
     upvotes INTEGER DEFAULT 0,
     downvotes INTEGER DEFAULT 0,
-    status VARCHAR(20) DEFAULT 'voting',
+    status VARCHAR(20) DEFAULT 'pending',
     processed_at TIMESTAMP
 );
 

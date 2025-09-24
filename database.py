@@ -47,7 +47,7 @@ class Database:
                     channel_id BIGINT,
                     upvotes INTEGER DEFAULT 0,
                     downvotes INTEGER DEFAULT 0,
-                    status VARCHAR(20) DEFAULT 'voting',
+                    status VARCHAR(20) DEFAULT 'pending',
                     processed_at TIMESTAMP
                 )
             """)
@@ -76,12 +76,35 @@ class Database:
                 )
             """)
             
+            # Apply schema migrations
+            self._apply_migrations(cursor)
+            
             logger.info("Database tables created/verified successfully")
         except psycopg2.Error as e:
             logger.error(f"Failed to setup tables: {e}")
             raise
         finally:
             cursor.close()
+    
+    def _apply_migrations(self, cursor):
+        """Apply database schema migrations."""
+        try:
+            # Migration 1: Ensure channel_id can be NULL (fix for existing databases with NOT NULL constraint)
+            cursor.execute("ALTER TABLE quotes ALTER COLUMN channel_id DROP NOT NULL")
+            logger.info("Applied migration: Made channel_id column nullable")
+        except psycopg2.Error as e:
+            # If the column is already nullable or doesn't exist, this will fail
+            # which is expected and not an error
+            logger.debug(f"Migration channel_id nullable skipped (likely already applied): {e}")
+        
+        try:
+            # Migration 2: Ensure message_id can be NULL (defensive, should already be nullable)
+            cursor.execute("ALTER TABLE quotes ALTER COLUMN message_id DROP NOT NULL")
+            logger.info("Applied migration: Made message_id column nullable")
+        except psycopg2.Error as e:
+            # If the column is already nullable or doesn't exist, this will fail
+            # which is expected and not an error
+            logger.debug(f"Migration message_id nullable skipped (likely already applied): {e}")
     
     def add_quote(self, content, author_id, author_name, message_id=None, channel_id=None):
         """Add a new quote to the database."""
@@ -103,15 +126,15 @@ class Database:
             cursor.close()
     
     def update_quote_message_info(self, quote_id, message_id, channel_id):
-        """Update quote with message and channel IDs."""
+        """Update quote with message and channel IDs and set status to voting."""
         cursor = self.connection.cursor()
         try:
             cursor.execute("""
                 UPDATE quotes 
-                SET message_id = %s, channel_id = %s 
+                SET message_id = %s, channel_id = %s, status = 'voting'
                 WHERE id = %s
             """, (message_id, channel_id, quote_id))
-            logger.info(f"Quote {quote_id} message info updated")
+            logger.info(f"Quote {quote_id} message info updated and status set to voting")
         except psycopg2.Error as e:
             logger.error(f"Failed to update quote message info: {e}")
             raise
