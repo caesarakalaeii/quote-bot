@@ -11,35 +11,37 @@
 CREATE TABLE IF NOT EXISTS quotes (
     id SERIAL PRIMARY KEY,
     content TEXT NOT NULL,
-    author_id BIGINT NOT NULL,
+    author_id VARCHAR(255) NOT NULL,
     author_name VARCHAR(255) NOT NULL,
+    channel_id VARCHAR(255) NOT NULL,
+    message_id VARCHAR(255) UNIQUE NOT NULL,
+    submitted_by_id VARCHAR(255) NOT NULL,
+    submitted_by_name VARCHAR(255) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
+    vote_message_id VARCHAR(255),
     submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    message_id BIGINT,
-    channel_id BIGINT,
-    upvotes INTEGER DEFAULT 0,
-    downvotes INTEGER DEFAULT 0,
-    status VARCHAR(20) DEFAULT 'pending',
-    processed_at TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Votes table - tracks individual user votes to prevent duplicate voting
 CREATE TABLE IF NOT EXISTS votes (
     id SERIAL PRIMARY KEY,
-    quote_id INTEGER REFERENCES quotes(id),
-    user_id BIGINT NOT NULL,
-    vote_type VARCHAR(10) NOT NULL,
-    voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    quote_id INTEGER REFERENCES quotes(id) ON DELETE CASCADE,
+    user_id VARCHAR(255) NOT NULL,
+    user_name VARCHAR(255) NOT NULL,
+    vote_type VARCHAR(10) NOT NULL CHECK (vote_type IN ('upvote', 'downvote')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(quote_id, user_id)
 );
 
--- Approved quotes table - stores quotes that passed the voting process
-CREATE TABLE IF NOT EXISTS approved_quotes (
+-- Quote bot settings table
+CREATE TABLE IF NOT EXISTS quote_bot_settings (
     id SERIAL PRIMARY KEY,
-    quote_id INTEGER REFERENCES quotes(id),
-    content TEXT NOT NULL,
-    author_name VARCHAR(255) NOT NULL,
-    approved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    final_score INTEGER DEFAULT 0
+    key VARCHAR(255) UNIQUE NOT NULL,
+    value TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Useful indexes for better performance
@@ -47,3 +49,5 @@ CREATE INDEX IF NOT EXISTS idx_quotes_status ON quotes(status);
 CREATE INDEX IF NOT EXISTS idx_quotes_submitted_at ON quotes(submitted_at);
 CREATE INDEX IF NOT EXISTS idx_votes_quote_id ON votes(quote_id);
 CREATE INDEX IF NOT EXISTS idx_votes_user_id ON votes(user_id);
+CREATE INDEX IF NOT EXISTS idx_quotes_message_id ON quotes(message_id);
+CREATE INDEX IF NOT EXISTS idx_settings_key ON quote_bot_settings(key);

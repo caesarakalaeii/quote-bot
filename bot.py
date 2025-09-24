@@ -77,25 +77,35 @@ class QuoteBot(commands.Bot):
                 await message.reply("Quote too long! Please keep it under 1000 characters.")
                 return
             
-            # Store quote in database
-            quote_id = self.db.add_quote(
-                content=quote_content,
-                author_id=message.author.id,
-                author_name=str(message.author)
-            )
+            # Post quote for voting first to get message and channel IDs
+            voting_message = await self.post_quote_for_voting(quote_content, message.author)
             
-            # Post quote for voting in a designated channel or guild
-            await self.post_quote_for_voting(quote_id, quote_content, message.author)
-            
-            # Confirm submission to user
-            await message.reply("✅ Your quote has been submitted for voting! The community will vote on it for one week.")
-            
+            if voting_message:
+                # Now store quote in database with the actual message and channel IDs
+                quote_id = self.db.add_quote(
+                    content=quote_content,
+                    author_id=message.author.id,
+                    author_name=str(message.author),
+                    message_id=voting_message.id,
+                    channel_id=voting_message.channel.id,
+                    submitted_by_id=message.author.id,
+                    submitted_by_name=str(message.author)
+                )
+                
+                # Update the message to include the quote ID
+                await self.update_voting_message_with_quote_id(voting_message, quote_id)
+                
+                # Confirm submission to user
+                await message.reply("✅ Your quote has been submitted for voting! The community will vote on it for one week.")
+            else:
+                await message.reply("❌ Failed to post quote for voting. Please try again.")
+                
         except Exception as e:
             logger.error(f"Error handling quote submission: {e}")
             await message.reply("❌ Sorry, there was an error submitting your quote. Please try again.")
     
-    async def post_quote_for_voting(self, quote_id, quote_content, author):
-        """Post a quote in the voting channel with voting buttons."""
+    async def post_quote_for_voting(self, quote_content, author):
+        """Post a quote in the voting channel with voting buttons. Returns the message object."""
         try:
             # Find a suitable channel to post the quote
             guild = None
@@ -126,7 +136,7 @@ class QuoteBot(commands.Bot):
             
             if not channel:
                 logger.error("No suitable channel found to post quote")
-                return
+                return None
             
             # Create embed for the quote
             embed = discord.Embed(
@@ -137,21 +147,36 @@ class QuoteBot(commands.Bot):
             )
             embed.add_field(name="Submitted by", value=author.mention, inline=True)
             embed.add_field(name="Voting ends", value=f"<t:{int((datetime.now().timestamp() + 7*24*3600))}:R>", inline=True)
-            embed.set_footer(text=f"Quote ID: {quote_id}")
+            embed.set_footer(text="Quote ID will be assigned after database entry")
             
-            # Create voting view with buttons
-            view = QuoteVotingView(quote_id, self.db)
+            # Create voting view with buttons (quote_id will be set later)
+            view = QuoteVotingView(None, self.db)
             
             # Send the message
             message = await channel.send(embed=embed, view=view)
             
-            # Update database with message info
-            self.db.update_quote_message_info(quote_id, message.id, channel.id)
-            
-            logger.info(f"Quote {quote_id} posted for voting in {channel.name}")
+            logger.info(f"Quote posted for voting in {channel.name}")
+            return message
             
         except Exception as e:
             logger.error(f"Error posting quote for voting: {e}")
+            return None
+    
+    async def update_voting_message_with_quote_id(self, message, quote_id):
+        """Update the voting message with the actual quote ID."""
+        try:
+            # Update the embed footer with the real quote ID
+            embed = message.embeds[0]
+            embed.set_footer(text=f"Quote ID: {quote_id}")
+            
+            # Update the view with the quote ID
+            view = QuoteVotingView(quote_id, self.db)
+            
+            await message.edit(embed=embed, view=view)
+            logger.info(f"Updated voting message with quote ID {quote_id}")
+            
+        except Exception as e:
+            logger.error(f"Error updating voting message with quote ID: {e}")
     
     @tasks.loop(hours=6)  # Check every 6 hours
     async def process_old_quotes(self):
@@ -187,12 +212,12 @@ class QuoteBot(commands.Bot):
             if not quote['message_id'] or not quote['channel_id']:
                 return
             
-            channel = self.get_channel(quote['channel_id'])
+            channel = self.get_channel(int(quote['channel_id']))
             if not channel:
                 return
             
             try:
-                message = await channel.fetch_message(quote['message_id'])
+                message = await channel.fetch_message(int(quote['message_id']))
             except discord.NotFound:
                 logger.warning(f"Original message for quote {quote['id']} not found")
                 return
@@ -254,17 +279,18 @@ class QuoteVotingView(discord.ui.View):
     async def handle_vote(self, interaction: discord.Interaction, vote_type):
         """Handle voting logic."""
         try:
-            # Add vote to database
-            self.db.add_vote(self.quote_id, interaction.user.id, vote_type)
-            
-            # Get updated quote info
-            quote = self.db.get_quote_by_id(self.quote_id)
-            if not quote:
-                await interaction.response.send_message("❌ Error: Quote not found!", ephemeral=True)
+            if self.quote_id is None:
+                await interaction.response.send_message("❌ Quote not ready for voting yet!", ephemeral=True)
                 return
             
+            # Add vote to database
+            self.db.add_vote(self.quote_id, interaction.user.id, str(interaction.user), vote_type)
+            
+            # Get updated vote counts
+            vote_counts = self.db.get_vote_counts(self.quote_id)
+            
             # Update button labels
-            self.update_vote_counts(quote['upvotes'], quote['downvotes'])
+            self.update_vote_counts(vote_counts['upvotes'], vote_counts['downvotes'])
             
             # Respond to interaction
             vote_emoji = "👍" if vote_type == "upvote" else "👎"
