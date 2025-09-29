@@ -362,6 +362,23 @@ class Database:
         finally:
             cursor.close()
     
+    def quote_exists(self, content, author_id):
+        """Check if a quote with the same content and author already exists."""
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) FROM quotes 
+                WHERE content = %s AND author_id = %s
+            """, (content, str(author_id)))
+            
+            count = cursor.fetchone()[0]
+            return count > 0
+        except psycopg2.Error as e:
+            logger.error(f"Failed to check quote existence: {e}")
+            return False
+        finally:
+            cursor.close()
+    
     def get_setting(self, key):
         """Get a setting value by key."""
         cursor = self.connection.cursor()
