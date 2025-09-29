@@ -60,9 +60,85 @@ class QuoteBot(commands.Bot):
         if isinstance(message.channel, discord.DMChannel):
             await self.handle_quote_submission(message)
         
+        # Handle reply mentions (quote submissions via reply)
+        if (message.reference and 
+            message.reference.message_id and 
+            self.user in message.mentions):
+            await self.handle_quote_mention_reply(message)
+        
         # Process commands
         await self.process_commands(message)
     
+    async def handle_quote_mention_reply(self, message):
+        """Handle replies that mention @quotebot to submit a quote."""
+        try:
+            # Fetch the original message being replied to
+            try:
+                original_message = await message.channel.fetch_message(message.reference.message_id)
+            except discord.NotFound:
+                await message.reply("❌ Original message not found!")
+                return
+            except discord.Forbidden:
+                await message.reply("❌ I don't have permission to access the original message!")
+                return
+            
+            # Validation: Don't quote bot messages
+            if original_message.author.bot:
+                await message.reply("❌ Can't quote bot messages!")
+                return
+            
+            # Validation: Don't quote empty messages
+            quote_content = original_message.content.strip()
+            if not quote_content:
+                await message.reply("❌ Can't quote empty messages!")
+                return
+            
+            # Basic validation for quote length
+            if len(quote_content) < 10:
+                await message.reply("❌ Quote too short! Message must have at least 10 characters.")
+                return
+            
+            if len(quote_content) > 1000:
+                await message.reply("❌ Quote too long! Message must be under 1000 characters.")
+                return
+            
+            # Check for duplicates
+            if self.db.quote_exists(quote_content):
+                await message.reply("❌ This quote already exists!")
+                return
+            
+            # Post quote for voting with proper attribution
+            voting_message = await self.post_quote_for_voting(
+                quote_content, 
+                original_message.author, 
+                submitted_by=message.author,
+                original_message_url=original_message.jump_url
+            )
+            
+            if voting_message:
+                # Store quote in database
+                quote_id = self.db.add_quote(
+                    content=quote_content,
+                    author_id=original_message.author.id,
+                    author_name=str(original_message.author),
+                    message_id=voting_message.id,
+                    channel_id=voting_message.channel.id,
+                    submitted_by_id=message.author.id,
+                    submitted_by_name=str(message.author)
+                )
+                
+                # Update the message to include the quote ID
+                await self.update_voting_message_with_quote_id(voting_message, quote_id)
+                
+                # Confirm submission to user
+                await message.reply("✅ Quote has been submitted for voting! The community will vote on it for one week.")
+            else:
+                await message.reply("❌ Failed to post quote for voting. Please try again.")
+                
+        except Exception as e:
+            logger.error(f"Error handling quote mention reply: {e}")
+            await message.reply("❌ Sorry, there was an error submitting the quote. Please try again.")
+
     async def handle_quote_submission(self, message):
         """Handle quote submissions via DM."""
         try:
@@ -104,7 +180,7 @@ class QuoteBot(commands.Bot):
             logger.error(f"Error handling quote submission: {e}")
             await message.reply("❌ Sorry, there was an error submitting your quote. Please try again.")
     
-    async def post_quote_for_voting(self, quote_content, author):
+    async def post_quote_for_voting(self, quote_content, author, submitted_by=None, original_message_url=None):
         """Post a quote in the voting channel with voting buttons. Returns the message object."""
         try:
             # Find a suitable channel to post the quote
@@ -145,8 +221,20 @@ class QuoteBot(commands.Bot):
                 color=discord.Color.blue(),
                 timestamp=datetime.now()
             )
-            embed.add_field(name="Submitted by", value=author.mention, inline=True)
+            
+            # Attribution: Show both quote author and submitter if different
+            if submitted_by and submitted_by != author:
+                embed.add_field(name="Quote Author", value=author.mention, inline=True)
+                embed.add_field(name="Submitted by", value=submitted_by.mention, inline=True)
+            else:
+                embed.add_field(name="Submitted by", value=author.mention, inline=True)
+            
             embed.add_field(name="Voting ends", value=f"<t:{int((datetime.now().timestamp() + 7*24*3600))}:R>", inline=True)
+            
+            # Add link to original message if provided
+            if original_message_url:
+                embed.add_field(name="Original Message", value=f"[Jump to Message]({original_message_url})", inline=False)
+            
             embed.set_footer(text="Quote ID will be assigned after database entry")
             
             # Create voting view with buttons (quote_id will be set later)
@@ -359,7 +447,9 @@ async def help_quotes(ctx):
     
     embed.add_field(
         name="📤 Submitting Quotes",
-        value="Send me a DM with your quote! I'll post it for community voting.",
+        value="**Method 1:** Send me a DM with your quote!\n"
+              "**Method 2:** Reply to any message and mention me (@quotebot) to submit that message as a quote!\n"
+              "Both methods will post the quote for community voting.",
         inline=False
     )
     
@@ -378,6 +468,12 @@ async def help_quotes(ctx):
     embed.add_field(
         name="⏰ Voting Period",
         value=f"Quotes are voted on for {Config.VOTE_DURATION_DAYS} days, then automatically processed.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="❓ Quote Requirements",
+        value="• 10-1000 characters\n• No bot messages\n• No duplicates\n• Must have actual content",
         inline=False
     )
     
