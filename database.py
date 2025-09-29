@@ -409,6 +409,19 @@ class Database:
         finally:
             cursor.close()
     
+    def quote_exists(self, content):
+        """Check if a quote with the given content already exists."""
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute("SELECT id FROM quotes WHERE content = %s", (content,))
+            result = cursor.fetchone()
+            return result is not None
+        except psycopg2.Error as e:
+            logger.error(f"Failed to check if quote exists: {e}")
+            return False
+        finally:
+            cursor.close()
+
     def close(self):
         """Close database connection."""
         if self.connection:
