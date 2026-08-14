@@ -13,9 +13,12 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
-    # `...` rather than a closed { self, nixpkgs }: adding a second input later
-    # would otherwise fail with "called with unexpected argument 'self'".
-    { nixpkgs, ... }:
+    # `self` is named, not for an output but for one shell line: it is the only
+    # handle a wrapper has on "the source this invocation named", which is what
+    # $REPO_ROOT falls back to (see rootPreamble). `...` rather than a closed
+    # { self, nixpkgs }: adding a second input later would otherwise fail with
+    # "called with unexpected argument".
+    { self, nixpkgs, ... }:
     let
       lib = nixpkgs.lib;
 
@@ -53,10 +56,22 @@
 
         # The bot talks to PostgreSQL and ships schema.sql, so `psql` is the tool
         # an agent needs to load the schema or inspect a dev database by hand.
-        # _15 matches `image: postgres:15` in both docker-compose files. It also
-        # supplies pg_config and the libpq headers -- the nix equivalent of the
-        # Dockerfile's `libpq-dev` -- so swapping psycopg2-binary for a source
-        # build of psycopg2 still compiles.
+        # _15 matches `image: postgres:15` in both docker-compose files.
+        #
+        # This is the psql CLIENT and nothing more. It is explicitly NOT the nix
+        # equivalent of the Dockerfile's `gcc` + `libpq-dev`: `pg_config` is
+        # absent from every output of postgresql_15 on the pinned nixpkgs -- .dev
+        # carries include/pg_config.h and lib/pgxs but no pg_config binary, and
+        # there is no top-level `pg_config` attribute to fall back on. Verified,
+        # not assumed: `find` over out/dev/lib matches only *.h.
+        #
+        # That costs this repo nothing, because requirements.txt pins
+        # psycopg2-binary: a manylinux wheel that vendors its own libpq
+        # (site-packages/psycopg2_binary.libs/libpq-*.so.5) and compiles nothing
+        # at install time. Swapping it for a source build of psycopg2 needs a
+        # pg_config this shell cannot hand it -- setup.py discovers every path
+        # through that one binary -- so that swap is a requirements.txt change
+        # AND a flake change. Do not assume the header half is enough.
         pkgs.postgresql_15
 
         # ---- present in every repo in the fleet ----
@@ -114,7 +129,22 @@
         setup = {
           description = "(network) create .venv from requirements.txt";
           text = ''
-            uv venv "$REPO_ROOT/.venv"
+            # $REPO_ROOT is the read-only store snapshot whenever the caller is
+            # not standing in a checkout (see rootPreamble). Say so here, rather
+            # than let uv fail two lines down with an EACCES on a /nix/store path
+            # that reads like a nix bug.
+            [ -w "$REPO_ROOT" ] || {
+              echo "dev-setup: REPO_ROOT ($REPO_ROOT) is read-only; run this from inside a checkout" >&2
+              exit 1
+            }
+            # --allow-existing, because "a .venv is already there" is the NORMAL
+            # case: every rerun after a requirements.txt change, and every agent
+            # retry. Without it uv exits 2 on "A virtual environment already
+            # exists at: .venv" and `set -e` kills the wrapper BEFORE the install
+            # line runs -- the bootstrap verb failing precisely when it is being
+            # used to recover. Not --clear, which would throw away a working venv
+            # (and any editable install in it) to redo work uv can do in place.
+            uv venv --allow-existing "$REPO_ROOT/.venv"
             uv pip install --python "$REPO_ROOT/.venv/bin/python" -r "$REPO_ROOT/requirements.txt"
           '';
         };
@@ -141,12 +171,47 @@
           '';
         };
         lint = {
+          # "${@:-$REPO_ROOT}", not a bare "$@": with no arguments ruff falls back
+          # to its own default of ".", i.e. the CALLER's directory, so
+          # `nix run /path/to/quote-bot#lint` from anywhere else used to exit 0
+          # on "No Python files found under the given path(s)". Explicit
+          # arguments still win, so `dev-lint --fix bot.py` is unaffected.
+          #
+          # --cache-dir, because the argument is only half the story: ruff writes
+          # .ruff_cache next to the CURRENT directory, so reading the right files
+          # while dropping a cache tree in the caller's directory would still
+          # break the "touches nothing outside the repo" rule. Pinning the cache
+          # is better than `cd "$REPO_ROOT"` here, which would silently
+          # reinterpret a relative path the user passed. .ruff_cache/ is already
+          # covered by .gitignore. --no-cache for the read-only store snapshot,
+          # where ruff otherwise dies on "Failed to create temporary file" rather
+          # than degrading to no caching.
           description = "ruff check";
-          text = ''ruff check "$@"'';
+          text = ''
+            if [ -w "$REPO_ROOT" ]; then
+              ruff check --cache-dir "$REPO_ROOT/.ruff_cache" "''${@:-$REPO_ROOT}"
+            else
+              ruff check --no-cache "''${@:-$REPO_ROOT}"
+            fi
+          '';
         };
         fmt = {
+          # Same default as lint, and it matters more here: ruff format WRITES.
+          # A bare "$@" made `nix run /path/to/quote-bot#fmt` reformat whatever
+          # Python happened to sit in the invoking directory.
           description = "ruff format (rewrites files)";
-          text = ''ruff format "$@"'';
+          text = ''
+            # Same read-only guard as setup: a mutating verb pointed at the store
+            # snapshot has nothing useful to do, so refuse rather than half-fail.
+            [ -w "$REPO_ROOT" ] || {
+              echo "dev-fmt: REPO_ROOT ($REPO_ROOT) is read-only; run this from inside a checkout" >&2
+              exit 1
+            }
+            # --cache-dir for the reason spelled out under lint; no --no-cache
+            # branch needed, because the guard above has already established that
+            # $REPO_ROOT is writable.
+            ruff format --cache-dir "$REPO_ROOT/.ruff_cache" "''${@:-$REPO_ROOT}"
+          '';
         };
         run = {
           # Same cd rationale as `test`: config.py calls load_dotenv() at import
@@ -175,11 +240,37 @@
           export LD_LIBRARY_PATH="${lib.makeLibraryPath (nativeLibs pkgs)}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         '';
 
-      # Every command gets $REPO_ROOT. `nix run` and `nix develop` both start in
-      # whatever directory they were invoked from, so a bare `.venv` silently
-      # forks a second environment as soon as an agent works from a subdirectory.
+      # Every command gets $REPO_ROOT: the one tree the verbs are allowed to read
+      # and write. `nix run` and `nix develop` both start in whatever directory
+      # they were invoked from, so a bare `.venv` silently forks a second
+      # environment as soon as an agent works from a subdirectory.
+      #
+      # Resolution order is the whole point, and `--show-toplevel || pwd` -- what
+      # this used to be -- was wrong in both halves: `--show-toplevel` answers for
+      # ANY git repo the caller happens to stand in, and `pwd` answers for /tmp.
+      # `nix run /path/to/quote-bot#fmt` from an unrelated directory therefore
+      # reformatted the CALLER's files, and `#lint` printed "All checks passed!"
+      # having inspected zero files of this repo -- a green gate that had never
+      # seen the code, in exactly the flake-URL form CI and a cold agent use.
+      #
+      # So: accept the caller's work tree only after proving it is a checkout of
+      # THIS repo -- bot.py and requirements.txt are the two paths the verbs
+      # execute and install from, so the probe tests the thing that matters --
+      # and otherwise fall back to ${self}, the snapshot `nix run` has already
+      # copied into the store, which is precisely the source the invocation
+      # named. The cost of naming self is that editing a tracked file rebuilds
+      # the five one-second wrappers (dev-help does not take this preamble, so it
+      # is unaffected); the benefit is that every verb is cwd-independent and
+      # cannot touch a file outside the repo.
+      #
+      # The fallback is a /nix/store path, so it is READ-ONLY. Verbs that write
+      # (setup, fmt) check for that explicitly rather than letting the tool die
+      # on a bare EACCES three layers down.
       rootPreamble = ''
-        REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+        REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+        if [ -z "$REPO_ROOT" ] || [ ! -f "$REPO_ROOT/bot.py" ] || [ ! -f "$REPO_ROOT/requirements.txt" ]; then
+          REPO_ROOT="${self}"
+        fi
         export REPO_ROOT
       '';
 
