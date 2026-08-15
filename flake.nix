@@ -15,7 +15,9 @@
   outputs =
     # `self` is named, not for an output but for one shell line: it is the only
     # handle a wrapper has on "the source this invocation named", which is what
-    # $REPO_ROOT falls back to (see rootPreamble). `...` rather than a closed
+    # $SRC_ROOT is and what $REPO_ROOT falls back to (see rootPreamble). It is
+    # also what a candidate work tree is compared AGAINST, so a sibling checkout
+    # cannot capture the verbs. `...` rather than a closed
     # { self, nixpkgs }: adding a second input later would otherwise fail with
     # "called with unexpected argument".
     { self, nixpkgs, ... }:
@@ -130,13 +132,10 @@
           description = "(network) create .venv from requirements.txt";
           text = ''
             # $REPO_ROOT is the read-only store snapshot whenever the caller is
-            # not standing in a checkout (see rootPreamble). Say so here, rather
-            # than let uv fail two lines down with an EACCES on a /nix/store path
-            # that reads like a nix bug.
-            [ -w "$REPO_ROOT" ] || {
-              echo "dev-setup: REPO_ROOT ($REPO_ROOT) is read-only; run this from inside a checkout" >&2
-              exit 1
-            }
+            # not standing in a checkout of THIS repo (see rootPreamble). Say so
+            # here, rather than let uv fail two lines down with an EACCES on a
+            # /nix/store path that reads like a nix bug.
+            need_writable_checkout
             # --allow-existing, because "a .venv is already there" is the NORMAL
             # case: every rerun after a requirements.txt change, and every agent
             # retry. Without it uv exits 2 on "A virtual environment already
@@ -177,6 +176,12 @@
           # on "No Python files found under the given path(s)". Explicit
           # arguments still win, so `dev-lint --fix bot.py` is unaffected.
           #
+          # Read-only, so no need_writable_checkout: when there is no checkout of
+          # this repo in reach, $REPO_ROOT is the store snapshot of this same
+          # source and linting it yields the same verdict. What it must never do
+          # is lint the SIBLING checkout the caller happens to stand in -- see
+          # rootPreamble, which is what stops that.
+          #
           # --cache-dir, because the argument is only half the story: ruff writes
           # .ruff_cache next to the CURRENT directory, so reading the right files
           # while dropping a cache tree in the caller's directory would still
@@ -201,16 +206,27 @@
           # Python happened to sit in the invoking directory.
           description = "ruff format (rewrites files)";
           text = ''
-            # Same read-only guard as setup: a mutating verb pointed at the store
-            # snapshot has nothing useful to do, so refuse rather than half-fail.
-            [ -w "$REPO_ROOT" ] || {
-              echo "dev-fmt: REPO_ROOT ($REPO_ROOT) is read-only; run this from inside a checkout" >&2
-              exit 1
-            }
-            # --cache-dir for the reason spelled out under lint; no --no-cache
-            # branch needed, because the guard above has already established that
-            # $REPO_ROOT is writable.
-            ruff format --cache-dir "$REPO_ROOT/.ruff_cache" "''${@:-$REPO_ROOT}"
+            # Same guard as setup: a mutating verb pointed at the store snapshot
+            # has nothing useful to do, so refuse rather than half-fail. `set --`
+            # rather than an inline "''${@:-...}" so the guard runs in the
+            # no-argument branch only -- an explicit path is the caller's own
+            # instruction and is forwarded untouched, as `dev-fmt bot.py` always
+            # was.
+            if [ "$#" -eq 0 ]; then
+              need_writable_checkout
+              set -- "$REPO_ROOT"
+            fi
+            # --cache-dir for the reason spelled out under lint, and the
+            # --no-cache branch for the same reason too: after the guard the
+            # no-argument case always has a writable $REPO_ROOT, but an explicit
+            # path can be passed from outside a checkout, where $REPO_ROOT is the
+            # read-only snapshot and ruff dies on "Failed to create temporary
+            # file" rather than degrading to no caching.
+            if [ -w "$REPO_ROOT" ]; then
+              ruff format --cache-dir "$REPO_ROOT/.ruff_cache" "$@"
+            else
+              ruff format --no-cache "$@"
+            fi
           '';
         };
         run = {
@@ -240,38 +256,75 @@
           export LD_LIBRARY_PATH="${lib.makeLibraryPath (nativeLibs pkgs)}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         '';
 
-      # Every command gets $REPO_ROOT: the one tree the verbs are allowed to read
-      # and write. `nix run` and `nix develop` both start in whatever directory
-      # they were invoked from, so a bare `.venv` silently forks a second
-      # environment as soon as an agent works from a subdirectory.
+      # Every command gets $SRC_ROOT and $REPO_ROOT. `nix run` and `nix develop`
+      # both start in whatever directory they were invoked from, and no verb may
+      # act on that directory -- these two are what it acts on instead.
       #
-      # Resolution order is the whole point, and `--show-toplevel || pwd` -- what
-      # this used to be -- was wrong in both halves: `--show-toplevel` answers for
-      # ANY git repo the caller happens to stand in, and `pwd` answers for /tmp.
-      # `nix run /path/to/quote-bot#fmt` from an unrelated directory therefore
-      # reformatted the CALLER's files, and `#lint` printed "All checks passed!"
-      # having inspected zero files of this repo -- a green gate that had never
-      # seen the code, in exactly the flake-URL form CI and a cold agent use.
+      # $SRC_ROOT is this flake's own source, snapshotted into the store when
+      # the flake was evaluated. It is the one anchor that is always available:
+      # `nix run /path/to/quote-bot#lint` tells the running program nothing
+      # whatever about /path/to/quote-bot (flake refs are location-independent
+      # by design, and there is no $FLAKE_DIR to read), so without `self` a
+      # wrapper invoked that way has literally no way to name the repo it
+      # belongs to. Its one limitation is that it is read-only, being a store
+      # path.
       #
-      # So: accept the caller's work tree only after proving it is a checkout of
-      # THIS repo -- bot.py and requirements.txt are the two paths the verbs
-      # execute and install from, so the probe tests the thing that matters --
-      # and otherwise fall back to ${self}, the snapshot `nix run` has already
-      # copied into the store, which is precisely the source the invocation
-      # named. The cost of naming self is that editing a tracked file rebuilds
-      # the five one-second wrappers (dev-help does not take this preamble, so it
-      # is unaffected); the benefit is that every verb is cwd-independent and
-      # cannot touch a file outside the repo.
+      # $REPO_ROOT is the writable checkout when the caller is standing in one,
+      # and $SRC_ROOT when they are not. `git rev-parse --show-toplevel` alone
+      # is NOT enough to find that checkout: run from inside some OTHER git
+      # repo it cheerfully answers with THAT repo's top level, and a verb that
+      # trusts the answer formats a stranger's source tree. Probing that answer
+      # for marker FILENAMES -- what this used to do, with bot.py and
+      # requirements.txt -- only narrows the bug, and in this fleet it does not
+      # narrow it at all: every sibling Discord bot checked out next to this one
+      # has a root bot.py and a requirements.txt, so `nix run
+      # /path/to/quote-bot#lint` from inside dc-bot passed the probe and
+      # reported dc-bot's 61 findings as this repo's. A filename cannot tell
+      # apart two repos that share the filename. So a candidate has to prove it
+      # is a checkout of THIS flake, by carrying a byte-identical flake.nix --
+      # the one file guaranteed to differ between any two repos in the fleet,
+      # since it carries their description, toolchain and command map. Compared
+      # with bash's own $(<file) rather than cmp or sha256sum, so the check
+      # depends on no package at all.
+      #
+      # Consequence worth knowing: edit flake.nix and the dev-* wrappers in an
+      # already-open `nix develop` stop recognising the tree, because they were
+      # built from the previous flake.nix. That is a stale shell telling you so
+      # -- re-enter it. `nix run` re-evaluates every time and never sees this.
       #
       # The fallback is a /nix/store path, so it is READ-ONLY. Verbs that write
-      # (setup, fmt) check for that explicitly rather than letting the tool die
-      # on a bare EACCES three layers down.
+      # (setup, fmt) call need_writable_checkout below rather than letting the
+      # tool die on a bare EACCES three layers down.
       rootPreamble = ''
-        REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-        if [ -z "$REPO_ROOT" ] || [ ! -f "$REPO_ROOT/bot.py" ] || [ ! -f "$REPO_ROOT/requirements.txt" ]; then
-          REPO_ROOT="${self}"
+        SRC_ROOT=${lib.escapeShellArg self}
+        export SRC_ROOT
+        REPO_ROOT="$SRC_ROOT"
+        _toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+        if [ -n "$_toplevel" ] && [ -f "$_toplevel/flake.nix" ] &&
+          [ "$(<"$_toplevel/flake.nix")" = "$(<"$SRC_ROOT/flake.nix")" ]; then
+          REPO_ROOT="$_toplevel"
         fi
+        unset _toplevel
         export REPO_ROOT
+      '';
+
+      # Wrappers only, not the shellHook -- an interactive shell has no business
+      # carrying this function around. Any command text that writes files calls
+      # it first, and it is the reason a mutating verb can fail loudly instead of
+      # falling back to "well, the cwd then".
+      guardPreamble = ''
+        need_writable_checkout() {
+          if [ "$REPO_ROOT" != "$SRC_ROOT" ]; then
+            return 0
+          fi
+          echo "This command rewrites files, so it needs a writable checkout of" >&2
+          echo "this repo -- and standing in $PWD there is none: no parent" >&2
+          echo "directory is a checkout of this flake. The only tree in reach is" >&2
+          echo "the read-only store snapshot $SRC_ROOT, and rewriting $PWD" >&2
+          echo "instead is exactly the bug this guard exists to prevent." >&2
+          echo "cd into the repo (or \`nix develop\` it), or pass an explicit path." >&2
+          exit 1
+        }
       '';
 
       # One derivation per command, reused by both `apps` and the dev shell, so
@@ -289,6 +342,7 @@
             meta.description = cmd.description;
             text = ''
               ${rootPreamble}
+              ${guardPreamble}
               ${ldPreamble pkgs}
               ${cmd.text}
             '';
